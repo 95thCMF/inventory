@@ -4,6 +4,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashMap};
 
 pub const TEAMS: &[&str] = &[
+    "디렉터팀",
     "회계등록팀",
     "시설팀",
     "전산팀",

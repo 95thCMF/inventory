@@ -168,7 +168,11 @@ async fn sync_once(st: St) -> Result<(), String> {
     // 1) 다른 기기들이 쓴 기록 받기 (바뀐 파일만)
     let entries = github::list_events(repo, token).await?;
     let mut files = st.files.get_untracked();
-    let mut changed = false;
+    // GitHub에서 지워진 기록 파일은 이 기기 사본에서도 지운다
+    let listed: HashSet<&str> = entries.iter().map(|e| e.name.as_str()).collect();
+    let before = files.len();
+    files.retain(|name, _| listed.contains(name.as_str()));
+    let mut changed = files.len() != before;
     for e in entries
         .iter()
         .filter(|e| e.kind == "file" && e.name.ends_with(".jsonl"))
