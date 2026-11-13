@@ -57,15 +57,6 @@ pub enum Op {
 }
 
 impl Op {
-    pub const ALL: [Op; 6] = [
-        Op::Checkout,
-        Op::Return,
-        Op::Consume,
-        Op::Lost,
-        Op::Damage,
-        Op::Adjust,
-    ];
-
     pub fn label(self) -> &'static str {
         match self {
             Op::Checkout => "대여",
@@ -77,15 +68,10 @@ impl Op {
         }
     }
 
-    /// 팀 지정이 반드시 필요한 작업
-    pub fn needs_team(self) -> bool {
-        matches!(self, Op::Checkout | Op::Return)
-    }
-
     pub fn hint(self) -> &'static str {
         match self {
             Op::Checkout => "팀이 물품을 가져갑니다.",
-            Op::Return => "가져간 물품을 돌려받습니다.",
+            Op::Return => "가져간 것 중 일부만 돌려받을 때 씁니다. 전부 돌려받을 때는 위의 '반납' 버튼을 누르세요.",
             Op::Consume => "소모품을 사용했습니다. 보유 수량이 줄어듭니다. 팀을 고르면 그 팀 대여분에서 먼저 뺍니다.",
             Op::Lost => "분실로 보유 수량이 줄어듭니다. 팀을 고르면 그 팀 대여분에서 먼저 뺍니다.",
             Op::Damage => "파손으로 보유 수량이 줄어듭니다. 팀을 고르면 그 팀 대여분에서 먼저 뺍니다.",
@@ -108,6 +94,12 @@ pub enum Kind {
         box_no: String,
         #[serde(default)]
         note: String,
+        /// 단위 (개, 장, 매 …). 비어 있으면 "개"
+        #[serde(default, skip_serializing_if = "String::is_empty")]
+        unit: String,
+        /// 개수를 세지 않는 물품 (테이프, 물티슈처럼 "많음")
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        uncounted: bool,
     },
     ItemDelete {
         item: String,
@@ -171,6 +163,8 @@ pub struct ItemState {
     pub owner: String,
     pub box_no: String,
     pub note: String,
+    pub unit: String,
+    pub uncounted: bool,
     pub owned: i64,
     /// 팀별 대여 중 수량
     pub out: BTreeMap<String, i64>,
@@ -194,6 +188,33 @@ impl ItemState {
     pub fn visible(&self) -> bool {
         self.known && !self.deleted
     }
+    pub fn unit(&self) -> &str {
+        if self.unit.is_empty() {
+            "개"
+        } else {
+            &self.unit
+        }
+    }
+    /// 목록에 보여줄 수량 ("12개", "여러 개")
+    pub fn qty_label(&self) -> String {
+        if self.uncounted {
+            "여러 개".into()
+        } else {
+            format!("{}{}", self.available(), self.unit())
+        }
+    }
+    /// 가용 수량이 바닥났는지 (수량을 세지 않는 물품은 해당 없음)
+    pub fn empty(&self) -> bool {
+        !self.uncounted && self.available() <= 0
+    }
+}
+
+/// 담당팀 표시 순서 (팀 목록 순서, 공용은 맨 뒤)
+pub fn owner_rank(owner: &str) -> usize {
+    TEAMS
+        .iter()
+        .position(|t| *t == owner)
+        .unwrap_or(if owner == "공용" { TEAMS.len() } else { TEAMS.len() + 1 })
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -254,6 +275,8 @@ pub fn compute(events: &[Event]) -> Inventory {
                 owner,
                 box_no,
                 note,
+                unit,
+                uncounted,
             } => {
                 let it = inv.items.entry(item.clone()).or_default();
                 it.id = item.clone();
@@ -262,6 +285,8 @@ pub fn compute(events: &[Event]) -> Inventory {
                 it.owner = owner.clone();
                 it.box_no = box_no.clone();
                 it.note = note.clone();
+                it.unit = unit.clone();
+                it.uncounted = *uncounted;
                 it.known = true;
                 it.deleted = false;
             }
@@ -386,9 +411,9 @@ pub fn stock_csv(inv: &Inventory) -> String {
             it.category.clone(),
             it.owner.clone(),
             it.box_no.clone(),
-            it.owned.to_string(),
+            if it.uncounted { "여러 개".into() } else { format!("{}{}", it.owned, it.unit()) },
             it.out_total().to_string(),
-            it.available().to_string(),
+            if it.uncounted { "-".into() } else { it.available().to_string() },
             teams,
             it.note.clone(),
         ];
@@ -432,7 +457,8 @@ pub struct ImportRow {
     pub name: String,
     pub category: String,
     pub owner: String,
-    pub qty: i64,
+    /// 숫자가 아니면(빈칸, "많음") 개수를 세지 않는 물품
+    pub qty: Option<i64>,
     pub box_no: String,
     pub note: String,
 }
@@ -461,7 +487,7 @@ pub fn parse_import(text: &str) -> Vec<ImportRow> {
                 name,
                 category: get(1),
                 owner: get(2),
-                qty: get(3).replace(',', "").parse().unwrap_or(0),
+                qty: get(3).replace(',', "").parse().ok(),
                 box_no: get(4),
                 note: get(5),
             })
@@ -510,6 +536,8 @@ mod tests {
                     owner: "영상팀".into(),
                     box_no: "A1".into(),
                     note: String::new(),
+                    unit: String::new(),
+                    uncounted: false,
                 },
             ),
             mv(2.0, Op::Adjust, 10, ""),
@@ -538,8 +566,9 @@ mod tests {
     fn import_tab_and_comma() {
         let rows = parse_import("이름,분류,담당팀,수량\n마이크,음향·영상,영상팀,4,A1\n건전지\t소모품\t공용\t1,200");
         assert_eq!(rows.len(), 2);
-        assert_eq!(rows[0].qty, 4);
+        assert_eq!(rows[0].qty, Some(4));
         assert_eq!(rows[0].box_no, "A1");
-        assert_eq!(rows[1].qty, 1200);
+        assert_eq!(rows[1].qty, Some(1200));
+        assert_eq!(parse_import("테이프,기타,공용,많음")[0].qty, None);
     }
 }

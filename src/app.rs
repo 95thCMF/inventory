@@ -483,6 +483,62 @@ fn Setup() -> impl IntoView {
     }
 }
 
+// ================= 공통: 팀 칩, 수량 버튼 =================
+
+/// 가로로 넘겨 고르는 팀 버튼 줄. 값 ""은 "전체".
+#[component]
+fn TeamChips(value: RwSignal<String>, options: Vec<String>, #[prop(default = "전체")] all: &'static str) -> impl IntoView {
+    let chip = move |v: String, label: String| {
+        let v2 = v.clone();
+        view! {
+            <button class="chip" class:on=move || value.get() == v2 on:click=move |_| value.set(v.clone())>
+                {label}
+            </button>
+        }
+    };
+    view! {
+        <div class="chips">
+            {chip(String::new(), all.to_string())}
+            {options.into_iter().map(|o| chip(o.clone(), o)).collect_view()}
+        </div>
+    }
+}
+
+/// − 숫자 + 버튼
+#[component]
+fn Stepper(value: RwSignal<i64>, #[prop(default = 1)] min: i64) -> impl IntoView {
+    view! {
+        <div class="stepper">
+            <button on:click=move |_| value.update(|v| *v = (*v - 1).max(min))>"−"</button>
+            <input
+                type="number"
+                inputmode="numeric"
+                prop:value=move || value.get().to_string()
+                on:input=move |ev| {
+                    if let Ok(n) = event_target_value(&ev).trim().parse::<i64>() {
+                        value.set(n.max(min))
+                    }
+                }
+            />
+            <button on:click=move |_| value.update(|v| *v += 1)>"+"</button>
+        </div>
+    }
+}
+
+fn group_by_owner(items: Vec<ItemState>) -> Vec<(String, Vec<ItemState>)> {
+    let mut g: BTreeMap<(usize, String), Vec<ItemState>> = BTreeMap::new();
+    for it in items {
+        let owner = if it.owner.is_empty() { "공용".to_string() } else { it.owner.clone() };
+        g.entry((owner_rank(&owner), owner)).or_default().push(it);
+    }
+    g.into_iter()
+        .map(|((_, owner), mut v)| {
+            v.sort_by(|a, b| a.name.cmp(&b.name));
+            (owner, v)
+        })
+        .collect()
+}
+
 // ================= 현황 =================
 
 #[component]
@@ -490,17 +546,12 @@ fn StockView() -> impl IntoView {
     let st = use_st();
     let q = RwSignal::new(String::new());
     let team = RwSignal::new(String::new());
-    let cat = RwSignal::new(String::new());
-    let low_only = RwSignal::new(false);
 
-    let list = move || {
+    let groups = move || {
         let q = q.get().trim().to_lowercase();
         let team = team.get();
-        let cat = cat.get();
-        let low = low_only.get();
-        st.inv.with(|inv| {
-            let mut v: Vec<ItemState> = inv
-                .items
+        let items: Vec<ItemState> = st.inv.with(|inv| {
+            inv.items
                 .values()
                 .filter(|i| i.visible())
                 .filter(|i| {
@@ -510,80 +561,72 @@ fn StockView() -> impl IntoView {
                         || i.note.to_lowercase().contains(&q)
                 })
                 .filter(|i| team.is_empty() || i.owner == team)
-                .filter(|i| cat.is_empty() || i.category == cat)
-                .filter(|i| !low || i.available() <= 0)
                 .cloned()
-                .collect();
-            v.sort_by(|a, b| a.category.cmp(&b.category).then(a.name.cmp(&b.name)));
-            v
-        })
+                .collect()
+        });
+        group_by_owner(items)
     };
 
     view! {
-        <div class="toolbar">
+        <div class="sticky-tools">
             <input
                 class="search"
                 type="search"
-                placeholder="물품 이름·박스·메모 검색"
+                placeholder="🔍 물품 찾기"
                 prop:value=move || q.get()
                 on:input=move |ev| q.set(event_target_value(&ev))
             />
-            <div class="row">
-                <Choice value=team options=owner_options() empty="전체 담당팀"/>
-                <Choice value=cat options=category_options() empty="전체 분류"/>
-            </div>
-            <label class="check">
-                <input
-                    type="checkbox"
-                    prop:checked=move || low_only.get()
-                    on:change=move |ev| low_only.set(event_target_checked(&ev))
-                />
-                "가용 0개 이하만"
-            </label>
+            <TeamChips value=team options=owner_options()/>
         </div>
-        <button class="btn primary block" on:click=move |_| st.sheet.set(Sheet::NewItem)>
-            "+ 물품 추가"
-        </button>
         {move || {
-            let v = list();
-            if v.is_empty() {
-                view! { <p class="empty">"표시할 물품이 없습니다."</p> }.into_any()
-            } else {
-                let count = v.len();
-                view! {
-                    <p class="muted small">{format!("{count}개 품목")}</p>
-                    <ul class="list">{v.into_iter().map(|i| item_row(st, i)).collect_view()}</ul>
+            let g = groups();
+            if g.is_empty() {
+                return view! {
+                    <div class="empty">
+                        <p>"표시할 물품이 없습니다."</p>
+                        <p class="small">"오른쪽 아래 + 버튼으로 추가하세요."</p>
+                    </div>
                 }
-                    .into_any()
+                    .into_any();
             }
+            g.into_iter()
+                .map(|(owner, items)| {
+                    let n = items.len();
+                    view! {
+                        <section class="group">
+                            <h3 class="group-title">{owner} <span class="count">{n}</span></h3>
+                            <ul class="list">{items.into_iter().map(|i| item_row(st, i)).collect_view()}</ul>
+                        </section>
+                    }
+                })
+                .collect_view()
+                .into_any()
         }}
+        <button class="fab" aria-label="물품 추가" on:click=move |_| st.sheet.set(Sheet::NewItem)>
+            "+"
+        </button>
     }
 }
 
 fn item_row(st: St, i: ItemState) -> impl IntoView {
     let id = i.id.clone();
     let out = i.out_total();
-    let avail = i.available();
-    let zero = avail <= 0;
-    let meta = [i.category.as_str(), i.owner.as_str(), i.box_no.as_str()]
+    let empty = i.empty();
+    let sub = [i.box_no.as_str(), i.note.as_str()]
         .iter()
         .filter(|s| !s.is_empty())
         .map(|s| s.to_string())
         .collect::<Vec<_>>()
         .join(" · ");
     view! {
-        <li class="card item" on:click=move |_| st.sheet.set(Sheet::Item(id.clone()))>
+        <li class="row-item" on:click=move |_| st.sheet.set(Sheet::Item(id.clone()))>
             <div class="main">
                 <div class="name">{i.name.clone()}</div>
-                <div class="meta">{meta}</div>
+                {(!sub.is_empty()).then(|| view! { <div class="meta">{sub}</div> })}
             </div>
-            <div class="nums">
-                <div class="avail" class:zero=zero>
-                    {avail}
-                    <span class="unit">"가용"</span>
-                </div>
-                <div class="small muted">{format!("보유 {}", i.owned)}</div>
-                {(out > 0).then(|| view! { <div class="tag out">{format!("대여 {out}")}</div> })}
+            <div class="right">
+                <div class="qty" class:empty=empty class:many=i.uncounted>{i.qty_label()}</div>
+                {(out > 0).then(|| view! { <div class="tag out">{format!("{out} 대여중")}</div> })}
             </div>
         </li>
     }
@@ -623,7 +666,8 @@ fn Modal(children: Children) -> impl IntoView {
     view! {
         <div class="overlay" on:click=move |_| st.sheet.set(Sheet::None)>
             <div class="sheet" on:click=|ev| ev.stop_propagation()>
-                <button class="close" on:click=move |_| st.sheet.set(Sheet::None)>
+                <div class="grab"></div>
+                <button class="close" aria-label="닫기" on:click=move |_| st.sheet.set(Sheet::None)>
                     "✕"
                 </button>
                 {children()}
@@ -635,63 +679,88 @@ fn Modal(children: Children) -> impl IntoView {
 #[component]
 fn ItemDetail(id: String) -> impl IntoView {
     let st = use_st();
-    let my_team = st.cfg.get_untracked().team;
+    let me = st.cfg.get_untracked();
+    let me_user = StoredValue::new(me.user.clone());
     let idv = StoredValue::new(id);
     let item = Memo::new(move |_| st.inv.with(|inv| inv.items.get(&idv.get_value()).cloned()));
 
-    let op = RwSignal::new(Op::Checkout);
-    let qty = RwSignal::new("1".to_string());
-    let team = RwSignal::new(my_team);
-    let person = RwSignal::new(st.cfg.get_untracked().user);
-    let memo = RwSignal::new(String::new());
+    // 가져가기
+    let take_qty = RwSignal::new(1i64);
+    let take_team = RwSignal::new(me.team.clone());
+    let take_person = RwSignal::new(me.user.clone());
+    // 기타 기록
+    let more_op = RwSignal::new(Op::Return);
+    let more_qty = RwSignal::new(1i64);
+    let more_team = RwSignal::new(String::new());
+    let more_memo = RwSignal::new(String::new());
 
-    let submit = move |_| {
+    let move_kind = move |item: &str, op: Op, qty: i64, team: String, person: String, memo: String| Kind::Move {
+        item: item.to_string(),
+        op,
+        qty,
+        to_team: team,
+        person,
+        retreat: st.retreat_id_untracked(),
+        memo,
+    };
+
+    let take = move |_| {
         let Some(it) = item.get_untracked() else { return };
-        let o = op.get_untracked();
-        let n: i64 = qty.get_untracked().trim().parse().unwrap_or(0);
-        if n == 0 || (o != Op::Adjust && n < 0) {
+        let n = take_qty.get_untracked();
+        let t = take_team.get_untracked();
+        if t.is_empty() {
+            st.notify("가져가는 팀을 고르세요");
+            return;
+        }
+        if !it.uncounted && n > it.available() {
+            st.notify(format!("남은 수량이 {}{}뿐입니다", it.available(), it.unit()));
+            return;
+        }
+        st.record(vec![move_kind(&it.id, Op::Checkout, n, t.clone(), take_person.get_untracked().trim().to_string(), String::new())]);
+        st.notify(format!("{t}: {} {n}{} 가져감", it.name, it.unit()));
+        take_qty.set(1);
+    };
+
+    let return_all = move |team: String, n: i64| {
+        let Some(it) = item.get_untracked() else { return };
+        st.record(vec![move_kind(&it.id, Op::Return, n, team.clone(), me_user.get_value(), String::new())]);
+        st.notify(format!("{team}: {} {n}{} 반납", it.name, it.unit()));
+    };
+
+    let save_more = move |_| {
+        let Some(it) = item.get_untracked() else { return };
+        let o = more_op.get_untracked();
+        let n = more_qty.get_untracked();
+        let t = more_team.get_untracked();
+        if n == 0 {
             st.notify("수량을 확인하세요");
             return;
         }
-        let t = team.get_untracked();
-        if o.needs_team() && t.is_empty() {
-            st.notify("팀을 선택하세요");
-            return;
-        }
-        match o {
-            Op::Checkout if n > it.available() => {
-                st.notify(format!("가용 수량({}개)보다 많습니다", it.available()));
+        if o == Op::Return {
+            if t.is_empty() {
+                st.notify("반납하는 팀을 고르세요");
                 return;
             }
-            Op::Return if n > it.out_of(&t) => {
-                st.notify(format!("{t} 대여 수량은 {}개입니다", it.out_of(&t)));
+            if n > it.out_of(&t) {
+                st.notify(format!("{t}이(가) 가져간 수량은 {}{}입니다", it.out_of(&t), it.unit()));
                 return;
             }
-            _ => {}
         }
-        st.record(vec![Kind::Move {
-            item: it.id.clone(),
-            op: o,
-            qty: n,
-            to_team: t,
-            person: person.get_untracked().trim().to_string(),
-            retreat: st.retreat_id_untracked(),
-            memo: memo.get_untracked().trim().to_string(),
-        }]);
-        st.notify(format!("{} {} {}개 기록했습니다", it.name, o.label(), n));
-        qty.set("1".into());
-        memo.set(String::new());
+        st.record(vec![move_kind(&it.id, o, n, t, me_user.get_value(), more_memo.get_untracked().trim().to_string())]);
+        st.notify(format!("{} {} {n}{} 기록", it.name, o.label(), it.unit()));
+        more_qty.set(1);
+        more_memo.set(String::new());
     };
 
     let delete = move |_| {
         let Some(it) = item.get_untracked() else { return };
         let ok = window()
-            .confirm_with_message(&format!("'{}'을(를) 삭제할까요? 기록은 남습니다.", it.name))
+            .confirm_with_message(&format!("'{}'을(를) 목록에서 지울까요? 기록은 남습니다.", it.name))
             .unwrap_or(false);
         if ok {
             st.record(vec![Kind::ItemDelete { item: it.id.clone() }]);
             st.sheet.set(Sheet::None);
-            st.notify("삭제했습니다");
+            st.notify("지웠습니다");
         }
     };
 
@@ -706,9 +775,8 @@ fn ItemDetail(id: String) -> impl IntoView {
                 .map(|e| {
                     view! {
                         <li>
-                            <span class="time">{fmt_time(e.at)}</span>
-                            <span>{describe(e, &inv)}</span>
-                            <span class="muted small">{format!(" — {}", e.by)}</span>
+                            <div>{describe(e, &inv)}</div>
+                            <div class="muted small">{format!("{} · {}", fmt_time(e.at), e.by)}</div>
                         </li>
                     }
                 })
@@ -720,46 +788,64 @@ fn ItemDetail(id: String) -> impl IntoView {
         let Some(it) = item.get() else {
             return view! { <p>"물품을 찾을 수 없습니다."</p> }.into_any();
         };
+        let unit = it.unit().to_string();
         let id_edit = it.id.clone();
-        let outs = it.out.clone();
-        let who = it.who.clone();
+        let outs: Vec<(String, i64, String)> = it
+            .out
+            .iter()
+            .map(|(t, n)| (t.clone(), *n, it.who.get(t).map(|v| v.join(", ")).unwrap_or_default()))
+            .collect();
+        let out_teams: Vec<String> = it.out.keys().cloned().collect();
+        let tags = [it.owner.clone(), it.category.clone(), it.box_no.clone()]
+            .into_iter()
+            .filter(|s| !s.is_empty())
+            .map(|s| view! { <span class="pill">{s}</span> })
+            .collect_view();
+        let unit2 = unit.clone();
         view! {
-            <h2>{it.name.clone()}</h2>
-            <p class="muted">
-                {[it.category.clone(), it.owner.clone(), it.box_no.clone()]
-                    .into_iter()
-                    .filter(|s| !s.is_empty())
-                    .collect::<Vec<_>>()
-                    .join(" · ")}
-            </p>
+            <h2 class="sheet-title">{it.name.clone()}</h2>
+            <div class="pills">{tags}</div>
             {(!it.note.is_empty()).then(|| view! { <p class="note">{it.note.clone()}</p> })}
-            <div class="stats">
-                <div>
-                    <b>{it.owned}</b>
-                    <span>"보유"</span>
-                </div>
-                <div>
-                    <b>{it.out_total()}</b>
-                    <span>"대여중"</span>
-                </div>
-                <div class:zero=it.available() <= 0>
-                    <b>{it.available()}</b>
-                    <span>"가용"</span>
-                </div>
-            </div>
+
+            {if it.uncounted {
+                view! {
+                    <div class="stats">
+                        <div><b class="many">"여러 개"</b><span>"수량 안 셈"</span></div>
+                        <div><b>{it.out_total()}</b><span>"대여중"</span></div>
+                    </div>
+                }
+                    .into_any()
+            } else {
+                view! {
+                    <div class="stats">
+                        <div class:empty=it.empty()><b>{it.available()}</b><span>{format!("남음 ({unit})")}</span></div>
+                        <div><b>{it.out_total()}</b><span>"대여중"</span></div>
+                        <div><b>{it.owned}</b><span>"전체"</span></div>
+                    </div>
+                }
+                    .into_any()
+            }}
+
             {(!outs.is_empty())
                 .then(|| {
+                    let unit = unit.clone();
                     view! {
+                        <h3>"가져간 팀"</h3>
                         <ul class="outs">
                             {outs
                                 .into_iter()
-                                .map(|(t, n)| {
-                                    let people = who.get(&t).map(|v| v.join(", ")).unwrap_or_default();
+                                .map(|(t, n, people)| {
+                                    let t2 = t.clone();
                                     view! {
                                         <li>
-                                            <b>{t}</b>
-                                            {format!(" {n}개 ")}
-                                            <span class="muted small">{people}</span>
+                                            <div class="main">
+                                                <b>{t.clone()}</b>
+                                                {format!(" {n}{unit}")}
+                                                <div class="muted small">{people}</div>
+                                            </div>
+                                            <button class="btn small" on:click=move |_| return_all(t2.clone(), n)>
+                                                "반납"
+                                            </button>
                                         </li>
                                     }
                                 })
@@ -768,54 +854,60 @@ fn ItemDetail(id: String) -> impl IntoView {
                     }
                 })}
 
-            <h3>"기록하기"</h3>
-            <div class="ops">
-                {Op::ALL
-                    .into_iter()
-                    .map(|o| {
-                        view! {
-                            <button class:active=move || op.get() == o on:click=move |_| op.set(o)>
-                                {o.label()}
-                            </button>
-                        }
-                    })
-                    .collect_view()}
+            <div class="action-card">
+                <h3>"가져가기"</h3>
+                <div class="take-row">
+                    <Stepper value=take_qty/>
+                    <Choice value=take_team options=team_options() empty="팀 선택"/>
+                </div>
+                <TextInput value=take_person placeholder="가져가는 사람"/>
+                <button class="btn primary block big" on:click=take>
+                    {move || format!("{}{} 가져가기", take_qty.get(), unit2)}
+                </button>
             </div>
-            <p class="muted small">{move || op.get().hint()}</p>
-            <div class="row">
-                <Field label="수량">
-                    <input
-                        type="number"
-                        inputmode="numeric"
-                        prop:value=move || qty.get()
-                        on:input=move |ev| qty.set(event_target_value(&ev))
-                    />
-                </Field>
-                <Field label="팀">
-                    <Choice value=team options=team_options() empty="팀 없음"/>
-                </Field>
-            </div>
-            <div class="row">
-                <Field label="담당자">
-                    <TextInput value=person placeholder="이름"/>
-                </Field>
-                <Field label="메모">
-                    <TextInput value=memo placeholder="선택"/>
-                </Field>
-            </div>
-            <button class="btn primary block" on:click=submit>
-                {move || format!("{} 기록", op.get().label())}
-            </button>
 
-            <h3>"이력"</h3>
-            <ul class="history">{history}</ul>
+            <details class="more">
+                <summary>"다른 기록 (일부 반납 · 소모 · 분실 · 파손 · 수량 조정)"</summary>
+                <div class="seg">
+                    {[Op::Return, Op::Consume, Op::Lost, Op::Damage, Op::Adjust]
+                        .into_iter()
+                        .map(|o| {
+                            view! {
+                                <button class:on=move || more_op.get() == o on:click=move |_| more_op.set(o)>
+                                    {o.label()}
+                                </button>
+                            }
+                        })
+                        .collect_view()}
+                </div>
+                <p class="muted small">{move || more_op.get().hint()}</p>
+                <div class="take-row">
+                    {move || {
+                        let min = if more_op.get() == Op::Adjust { -9999 } else { 1 };
+                        view! { <Stepper value=more_qty min=min/> }
+                    }}
+                    {
+                        let opts = if out_teams.is_empty() { team_options() } else { out_teams.clone() };
+                        view! { <Choice value=more_team options=opts empty="팀 없음"/> }
+                    }
+                </div>
+                <TextInput value=more_memo placeholder="메모 (선택)"/>
+                <button class="btn block" on:click=save_more>
+                    {move || format!("{} 기록", more_op.get().label())}
+                </button>
+            </details>
+
+            <details class="more">
+                <summary>"이력"</summary>
+                <ul class="history">{history}</ul>
+            </details>
 
             <div class="row end">
                 <button class="btn" on:click=move |_| st.sheet.set(Sheet::EditItem(id_edit.clone()))>
                     "정보 수정"
                 </button>
                 <button class="btn danger" on:click=delete>
-                    "삭제"
+                    "지우기"
                 </button>
             </div>
         }
@@ -832,17 +924,11 @@ fn ItemForm(id: Option<String>) -> impl IntoView {
     let is_new = existing.is_none();
     let e = existing.unwrap_or_default();
     let name = RwSignal::new(e.name.clone());
-    let category = RwSignal::new(if e.category.is_empty() {
-        CATEGORIES[0].to_string()
-    } else {
-        e.category.clone()
-    });
-    let owner = RwSignal::new(if e.owner.is_empty() {
-        st.cfg.get_untracked().team
-    } else {
-        e.owner.clone()
-    });
-    let qty = RwSignal::new("1".to_string());
+    let category = RwSignal::new(if e.category.is_empty() { "기타".to_string() } else { e.category.clone() });
+    let owner = RwSignal::new(if e.owner.is_empty() { st.cfg.get_untracked().team } else { e.owner.clone() });
+    let qty = RwSignal::new(1i64);
+    let uncounted = RwSignal::new(e.uncounted);
+    let unit = RwSignal::new(if e.unit.is_empty() { "개".to_string() } else { e.unit.clone() });
     let box_no = RwSignal::new(e.box_no.clone());
     let note = RwSignal::new(e.note.clone());
     let idv = StoredValue::new(id);
@@ -854,70 +940,75 @@ fn ItemForm(id: Option<String>) -> impl IntoView {
             return;
         }
         let item_id = idv.get_value().unwrap_or_else(new_id);
+        let u = unit.get_untracked().trim().to_string();
         let mut kinds = vec![Kind::Item {
             item: item_id.clone(),
-            name: n.clone(),
+            name: n,
             category: category.get_untracked(),
             owner: owner.get_untracked(),
             box_no: box_no.get_untracked().trim().to_string(),
             note: note.get_untracked().trim().to_string(),
+            unit: if u == "개" { String::new() } else { u },
+            uncounted: uncounted.get_untracked(),
         }];
-        if is_new {
-            let q: i64 = qty.get_untracked().trim().parse().unwrap_or(0);
-            if q != 0 {
-                kinds.push(Kind::Move {
-                    item: item_id.clone(),
-                    op: Op::Adjust,
-                    qty: q,
-                    to_team: String::new(),
-                    person: String::new(),
-                    retreat: st.retreat_id_untracked(),
-                    memo: "초기 수량".into(),
-                });
-            }
+        let q = qty.get_untracked();
+        if is_new && !uncounted.get_untracked() && q != 0 {
+            kinds.push(Kind::Move {
+                item: item_id.clone(),
+                op: Op::Adjust,
+                qty: q,
+                to_team: String::new(),
+                person: String::new(),
+                retreat: st.retreat_id_untracked(),
+                memo: "처음 수량".into(),
+            });
         }
         st.record(kinds);
-        st.notify(if is_new { "등록했습니다" } else { "수정했습니다" });
+        st.notify(if is_new { "추가했습니다" } else { "수정했습니다" });
         st.sheet.set(Sheet::Item(item_id));
     };
 
     view! {
-        <h2>{if is_new { "물품 추가" } else { "물품 정보 수정" }}</h2>
+        <h2 class="sheet-title">{if is_new { "물품 추가" } else { "물품 정보 수정" }}</h2>
         <Field label="이름">
-            <TextInput value=name placeholder="예: 무선 마이크"/>
+            <TextInput value=name placeholder="예: HDMI 케이블 1.5m"/>
         </Field>
+        <Field label="담당팀">
+            <Choice value=owner options=owner_options()/>
+        </Field>
+        <label class="check">
+            <input
+                type="checkbox"
+                prop:checked=move || uncounted.get()
+                on:change=move |ev| uncounted.set(event_target_checked(&ev))
+            />
+            "개수를 세지 않음 (테이프·물티슈처럼 \"많음\")"
+        </label>
+        <Show when=move || !uncounted.get()>
+            <div class="row">
+                {is_new.then(|| view! {
+                    <Field label="수량">
+                        <Stepper value=qty min=0/>
+                    </Field>
+                })}
+                <Field label="단위">
+                    <TextInput value=unit placeholder="개"/>
+                </Field>
+            </div>
+        </Show>
         <div class="row">
             <Field label="분류">
                 <Choice value=category options=category_options()/>
             </Field>
-            <Field label="담당팀">
-                <Choice value=owner options=owner_options()/>
-            </Field>
-        </div>
-        <div class="row">
-            {is_new
-                .then(|| {
-                    view! {
-                        <Field label="보유 수량">
-                            <input
-                                type="number"
-                                inputmode="numeric"
-                                prop:value=move || qty.get()
-                                on:input=move |ev| qty.set(event_target_value(&ev))
-                            />
-                        </Field>
-                    }
-                })}
-            <Field label="박스/보관 위치">
-                <TextInput value=box_no placeholder="예: A-3"/>
+            <Field label="보관 위치·박스">
+                <TextInput value=box_no placeholder="예: 치즈박스"/>
             </Field>
         </div>
         <Field label="메모">
             <TextInput value=note placeholder="선택"/>
         </Field>
-        {(!is_new)
-            .then(|| view! { <p class="muted small">"수량은 상세 화면의 '수량조정'으로 바꿉니다."</p> })}
-        <button class="btn primary block" on:click=save>
+        {(!is_new).then(|| view! { <p class="muted small">"수량은 상세 화면의 '다른 기록 → 수량 조정'으로 바꿉니다."</p> })}
+        <button class="btn primary block big" on:click=save>
             "저장"
         </button>
     }
@@ -928,17 +1019,16 @@ fn ItemForm(id: Option<String>) -> impl IntoView {
 #[component]
 fn OutView() -> impl IntoView {
     let st = use_st();
-    let mine_only = RwSignal::new(false);
+    let team = RwSignal::new(String::new());
 
     let groups = move || {
-        let my = st.cfg.with(|c| c.team.clone());
-        let mine = mine_only.get();
+        let team = team.get();
         st.inv.with(|inv| {
-            let mut g: BTreeMap<String, Vec<(ItemState, i64)>> = BTreeMap::new();
+            let mut g: BTreeMap<(usize, String), Vec<(ItemState, i64)>> = BTreeMap::new();
             for it in inv.items.values().filter(|i| i.visible()) {
                 for (t, n) in &it.out {
-                    if *n > 0 && (!mine || *t == my) {
-                        g.entry(t.clone()).or_default().push((it.clone(), *n));
+                    if *n > 0 && (team.is_empty() || *t == team) {
+                        g.entry((owner_rank(t), t.clone())).or_default().push((it.clone(), *n));
                     }
                 }
             }
@@ -946,9 +1036,9 @@ fn OutView() -> impl IntoView {
         })
     };
 
-    let return_all = move |item: String, team: String, n: i64, name: String| {
+    let return_all = move |item: String, team: String, n: i64, label: String| {
         let ok = window()
-            .confirm_with_message(&format!("{team}의 {name} {n}개를 모두 반납 처리할까요?"))
+            .confirm_with_message(&format!("{team}의 {label}을(를) 모두 반납 처리할까요?"))
             .unwrap_or(false);
         if ok {
             st.record(vec![Kind::Move {
@@ -965,47 +1055,41 @@ fn OutView() -> impl IntoView {
     };
 
     view! {
-        <div class="toolbar">
-            <label class="check">
-                <input
-                    type="checkbox"
-                    prop:checked=move || mine_only.get()
-                    on:change=move |ev| mine_only.set(event_target_checked(&ev))
-                />
-                "우리 팀만 보기"
-            </label>
+        <div class="sticky-tools">
+            <TeamChips value=team options=team_options()/>
         </div>
         {move || {
             let g = groups();
             if g.is_empty() {
-                return view! { <p class="empty">"대여 중인 물품이 없습니다. 👍"</p> }.into_any();
+                return view! { <p class="empty">"가져간 물품이 없습니다 👍"</p> }.into_any();
             }
             g.into_iter()
-                .map(|(team, rows)| {
-                    let total: i64 = rows.iter().map(|r| r.1).sum();
+                .map(|((_, team), rows)| {
+                    let count = rows.len();
                     view! {
                         <section class="group">
-                            <h3>{team.clone()} <span class="muted small">{format!(" {total}개")}</span></h3>
+                            <h3 class="group-title">{team.clone()} <span class="count">{count}</span></h3>
                             <ul class="list">
                                 {rows
                                     .into_iter()
                                     .map(|(it, n)| {
                                         let people = it.who.get(&team).map(|v| v.join(", ")).unwrap_or_default();
                                         let id = it.id.clone();
-                                        let (id2, t2, name2) = (it.id.clone(), team.clone(), it.name.clone());
+                                        let label = format!("{} {n}{}", it.name, it.unit());
+                                        let (id2, t2, l2) = (it.id.clone(), team.clone(), label.clone());
                                         view! {
-                                            <li class="card item">
+                                            <li class="row-item">
                                                 <div class="main" on:click=move |_| st.sheet.set(Sheet::Item(id.clone()))>
                                                     <div class="name">{it.name.clone()}</div>
                                                     <div class="meta">{people}</div>
                                                 </div>
-                                                <div class="nums">
-                                                    <div class="avail">{n}<span class="unit">"개"</span></div>
+                                                <div class="right">
+                                                    <div class="qty">{format!("{n}{}", it.unit())}</div>
                                                     <button
                                                         class="btn small"
-                                                        on:click=move |_| return_all(id2.clone(), t2.clone(), n, name2.clone())
+                                                        on:click=move |_| return_all(id2.clone(), t2.clone(), n, l2.clone())
                                                     >
-                                                        "전체 반납"
+                                                        "반납"
                                                     </button>
                                                 </div>
                                             </li>
@@ -1028,6 +1112,7 @@ fn OutView() -> impl IntoView {
 fn PackView() -> impl IntoView {
     let st = use_st();
     let team = RwSignal::new(String::new());
+    let phase = RwSignal::new("go");
     let remaining = RwSignal::new(false);
 
     move || {
@@ -1043,99 +1128,109 @@ fn PackView() -> impl IntoView {
             .into_any();
         };
         let rid = StoredValue::new(rid);
-        let toggle = move |item: String, phase: &'static str, done: bool| {
+        let toggle = move |item: String, done: bool| {
             st.record(vec![Kind::Pack {
                 retreat: rid.get_value(),
                 item,
-                phase: phase.into(),
+                phase: phase.get_untracked().into(),
                 done,
             }]);
         };
         let content = move || {
             let team = team.get();
+            let ph = phase.get();
             let rem = remaining.get();
             let r = rid.get_value();
-            st.inv.with(|inv| {
-                let all: Vec<&ItemState> = inv
+            let (items, total, done) = st.inv.with(|inv| {
+                let all: Vec<ItemState> = inv
                     .items
                     .values()
                     .filter(|i| i.visible())
                     .filter(|i| team.is_empty() || i.owner == team)
+                    .cloned()
                     .collect();
                 let total = all.len();
-                let go = all.iter().filter(|i| inv.packed(&r, &i.id, "go")).count();
-                let back = all.iter().filter(|i| inv.packed(&r, &i.id, "back")).count();
-                let mut boxes: BTreeMap<String, Vec<(ItemState, bool, bool)>> = BTreeMap::new();
-                for i in all {
-                    let g = inv.packed(&r, &i.id, "go");
-                    let b = inv.packed(&r, &i.id, "back");
-                    if rem && g && b {
-                        continue;
-                    }
-                    let key = if i.box_no.is_empty() { "박스 미지정".to_string() } else { i.box_no.clone() };
-                    boxes.entry(key).or_default().push(((*i).clone(), g, b));
-                }
-                let pct = |n: usize| if total == 0 { 0 } else { n * 100 / total };
-                view! {
-                    <div class="progress">
-                        <div>
-                            <span>{format!("출발 {go}/{total}")}</span>
-                            <div class="bar"><i style=format!("width:{}%", pct(go))></i></div>
-                        </div>
-                        <div>
-                            <span>{format!("복귀 {back}/{total}")}</span>
-                            <div class="bar back"><i style=format!("width:{}%", pct(back))></i></div>
-                        </div>
-                    </div>
-                    {boxes
-                        .into_iter()
-                        .map(|(bx, rows)| {
-                            view! {
-                                <section class="group">
-                                    <h3>{bx}</h3>
-                                    <ul class="list">
-                                        {rows
+                let done = all.iter().filter(|i| inv.packed(&r, &i.id, ph)).count();
+                let items: Vec<(ItemState, bool)> = all
+                    .into_iter()
+                    .map(|i| {
+                        let d = inv.packed(&r, &i.id, ph);
+                        (i, d)
+                    })
+                    .filter(|(_, d)| !(rem && *d))
+                    .collect();
+                (items, total, done)
+            });
+            let pct = if total == 0 { 0 } else { done * 100 / total };
+            let mut groups: BTreeMap<(usize, String), Vec<(ItemState, bool)>> = BTreeMap::new();
+            for (i, d) in items {
+                groups.entry((owner_rank(&i.owner), i.owner.clone())).or_default().push((i, d));
+            }
+            view! {
+                <div class="progress" class:back=ph == "back">
+                    <div class="bar"><i style=format!("width:{pct}%")></i></div>
+                    <span>{format!("{done} / {total}")}</span>
+                </div>
+                {groups
+                    .into_iter()
+                    .map(|((_, owner), mut rows)| {
+                        rows.sort_by(|a, b| a.0.name.cmp(&b.0.name));
+                        view! {
+                            <section class="group">
+                                <h3 class="group-title">{owner}</h3>
+                                <ul class="list">
+                                    {rows
+                                        .into_iter()
+                                        .map(|(it, d)| {
+                                            let id = it.id.clone();
+                                            let sub = [
+                                                if it.uncounted { String::new() } else { format!("{}{}", it.owned, it.unit()) },
+                                                it.box_no.clone(),
+                                            ]
                                             .into_iter()
-                                            .map(|(it, g, b)| {
-                                                let (i1, i2) = (it.id.clone(), it.id.clone());
-                                                view! {
-                                                    <li class="card pack">
-                                                        <div class="main">
-                                                            <div class="name">{it.name.clone()}</div>
-                                                            <div class="meta">{format!("{} · {}개", it.owner, it.owned)}</div>
-                                                        </div>
-                                                        <label class="tick" class:on=g>
-                                                            <input type="checkbox" prop:checked=g on:change=move |ev| toggle(i1.clone(), "go", event_target_checked(&ev))/>
-                                                            "출발"
-                                                        </label>
-                                                        <label class="tick back" class:on=b>
-                                                            <input type="checkbox" prop:checked=b on:change=move |ev| toggle(i2.clone(), "back", event_target_checked(&ev))/>
-                                                            "복귀"
-                                                        </label>
-                                                    </li>
-                                                }
-                                            })
-                                            .collect_view()}
-                                    </ul>
-                                </section>
-                            }
-                        })
-                        .collect_view()}
-                }
-            })
+                                            .filter(|s| !s.is_empty())
+                                            .collect::<Vec<_>>()
+                                            .join(" · ");
+                                            view! {
+                                                <li class="row-item pack" class:done=d on:click=move |_| toggle(id.clone(), !d)>
+                                                    <span class="tickbox">{if d { "✓" } else { "" }}</span>
+                                                    <div class="main">
+                                                        <div class="name">{it.name.clone()}</div>
+                                                        {(!sub.is_empty()).then(|| view! { <div class="meta">{sub}</div> })}
+                                                    </div>
+                                                </li>
+                                            }
+                                        })
+                                        .collect_view()}
+                                </ul>
+                            </section>
+                        }
+                    })
+                    .collect_view()}
+            }
         };
         view! {
-            <h2 class="page">{format!("{rname} 체크리스트")}</h2>
-            <div class="toolbar">
-                <Choice value=team options=owner_options() empty="전체 담당팀"/>
-                <label class="check">
-                    <input
-                        type="checkbox"
-                        prop:checked=move || remaining.get()
-                        on:change=move |ev| remaining.set(event_target_checked(&ev))
-                    />
-                    "남은 것만 보기"
-                </label>
+            <div class="sticky-tools">
+                <div class="pack-head">
+                    <b>{rname}</b>
+                    <label class="check small">
+                        <input
+                            type="checkbox"
+                            prop:checked=move || remaining.get()
+                            on:change=move |ev| remaining.set(event_target_checked(&ev))
+                        />
+                        "남은 것만"
+                    </label>
+                </div>
+                <div class="seg two">
+                    <button class:on=move || phase.get() == "go" on:click=move |_| phase.set("go")>
+                        "🚌 출발 전 챙기기"
+                    </button>
+                    <button class:on=move || phase.get() == "back" on:click=move |_| phase.set("back")>
+                        "🏠 복귀 후 확인"
+                    </button>
+                </div>
+                <TeamChips value=team options=owner_options()/>
             </div>
             {content}
         }
@@ -1293,12 +1388,14 @@ fn SettingsView() -> impl IntoView {
                 owner,
                 box_no: r.box_no,
                 note: r.note,
+                unit: String::new(),
+                uncounted: r.qty.is_none(),
             });
-            if r.qty != 0 {
+            if let Some(q) = r.qty.filter(|q| *q != 0) {
                 kinds.push(Kind::Move {
                     item: id,
                     op: Op::Adjust,
-                    qty: r.qty,
+                    qty: q,
                     to_team: String::new(),
                     person: String::new(),
                     retreat: retreat.clone(),
