@@ -124,7 +124,24 @@ impl St {
     }
 }
 
-pub const DEFAULT_REPO: &str = "panagyric/retreat-inventory-data";
+pub const DEFAULT_REPO: &str = "95thCMF/inventory-data";
+/// 예전 데이터 저장소. 이 값이 저장된 기기는 새 저장소로 옮긴다.
+const OLD_REPOS: &[&str] = &["panagyric/retreat-inventory-data"];
+
+/// 예전 저장소를 쓰던 기기를 새 저장소로 옮긴다. 옮겼으면 true.
+/// 예전 토큰은 새 저장소에 쓸 수 없으므로 지우고, 받아 둔 기록 사본도 비운다.
+/// (아직 못 보낸 기록은 남겨 두었다가 새 저장소로 보낸다)
+fn migrate_repo(st: St) -> bool {
+    let old = st.cfg.with_untracked(|c| OLD_REPOS.contains(&c.repo.trim()));
+    if old {
+        st.cfg.update(|c| {
+            c.repo = DEFAULT_REPO.to_string();
+            c.token.clear();
+        });
+        st.files.set(HashMap::new());
+    }
+    old
+}
 
 fn use_st() -> St {
     expect_context::<St>()
@@ -235,6 +252,10 @@ async fn sync_once(st: St) -> Result<(), String> {
 pub fn App() -> impl IntoView {
     let st = St::new();
     provide_context(st);
+    if migrate_repo(st) {
+        st.tab.set(Tab::Settings);
+        st.notify("데이터 저장소가 바뀌었습니다. 새 접근 토큰을 입력해 주세요");
+    }
 
     Effect::new(move |_| st.cfg.with(|c| c.save()));
     Effect::new(move |_| {
@@ -470,9 +491,6 @@ fn Setup() -> impl IntoView {
             </Field>
             <Field label="소속 팀">
                 <Choice value=team options=team_options() empty="팀 선택"/>
-            </Field>
-            <Field label="데이터 저장소 (아이디/저장소이름)">
-                <TextInput value=repo placeholder="panagyric/retreat-inventory-data"/>
             </Field>
             <Field label="접근 토큰">
                 <TextInput value=token kind="password" placeholder="관리자에게 받은 토큰"/>
@@ -1563,7 +1581,7 @@ fn SettingsView() -> impl IntoView {
             </p>
             {move || st.status.get().error.map(|e| view! { <p class="error small">{e}</p> })}
             <Field label="데이터 저장소 (아이디/저장소이름)">
-                <TextInput value=repo placeholder="panagyric/retreat-inventory-data"/>
+                <TextInput value=repo placeholder="95thCMF/inventory-data"/>
             </Field>
             <Field label="접근 토큰">
                 <TextInput value=token kind="password"/>

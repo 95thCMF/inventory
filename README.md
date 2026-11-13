@@ -22,12 +22,12 @@ Rust(Leptos)로 만든 웹앱을 GitHub Pages에 올리고, 데이터는 비공�
 
 ## 처음 준비 (관리자 1회)
 
-1. **앱 저장소** (`retreat-inventory`, 공개): 이 코드를 올립니다.
+1. **앱 저장소** (`95thCMF/inventory`, 공개): 이 코드를 올립니다.
    Settings → Pages → Source를 **GitHub Actions**로 바꾸면 `main`에 push할 때마다 자동 배포됩니다.
-   주소: https://panagyric.github.io/retreat-inventory/
-2. **데이터 저장소** (`retreat-inventory-data`, **비공개**): README만 있는 빈 저장소로 만듭니다.
+   주소: https://95thcmf.github.io/inventory/
+2. **데이터 저장소** (`95thCMF/inventory-data`, **비공개**): README만 있는 빈 저장소로 만듭니다.
 3. **토큰**: GitHub → Settings → Developer settings → Personal access tokens → Fine-grained tokens
-   - Repository access: `retreat-inventory-data` 하나만
+   - Repository access: `inventory-data` 하나만
    - Permissions: **Contents: Read and write** (나머지는 없음)
    - 만료일: 수련회가 끝난 뒤로
 4. 앱 설정 화면의 "다른 사람에게 보낼 주소"를 봉사자에게 보내고, 토큰은 따로 전달합니다.
