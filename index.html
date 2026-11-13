@@ -1,0 +1,27 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="utf-8"/>
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover"/>
+    <title>수련회 물품관리</title>
+    <meta name="theme-color" content="#2f6f4f"/>
+    <meta name="apple-mobile-web-app-capable" content="yes"/>
+    <meta name="apple-mobile-web-app-title" content="물품관리"/>
+    <link rel="manifest" href="manifest.json"/>
+    <link rel="icon" href="icon.svg" type="image/svg+xml"/>
+    <link rel="apple-touch-icon" href="icon-192.png"/>
+    <link data-trunk rel="css" href="style.css"/>
+    <link data-trunk rel="copy-file" href="public/manifest.json"/>
+    <link data-trunk rel="copy-file" href="public/sw.js"/>
+    <link data-trunk rel="copy-file" href="public/icon.svg"/>
+    <link data-trunk rel="copy-file" href="public/icon-192.png"/>
+    <link data-trunk rel="copy-file" href="public/icon-512.png"/>
+    <link data-trunk rel="rust" data-wasm-opt="z"/>
+    <script>
+        if ('serviceWorker' in navigator) {
+            addEventListener('load', () => navigator.serviceWorker.register('sw.js'));
+        }
+    </script>
+</head>
+<body></body>
+</html>
