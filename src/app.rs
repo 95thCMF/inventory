@@ -689,10 +689,18 @@ fn ItemDetail(id: String) -> impl IntoView {
     let take_team = RwSignal::new(me.team.clone());
     let take_person = RwSignal::new(me.user.clone());
     // 기타 기록
-    let more_op = RwSignal::new(Op::Return);
+    let more_op = RwSignal::new(Op::Consume);
     let more_qty = RwSignal::new(1i64);
     let more_team = RwSignal::new(String::new());
     let more_memo = RwSignal::new(String::new());
+    // 전체 수량 고치기 (물품 상태가 바뀌면 현재 값으로 맞춤)
+    let total = RwSignal::new(0i64);
+    Effect::new(move |_| {
+        if let Some(owned) = item.with(|i| i.as_ref().map(|i| i.owned)) {
+            total.set(owned);
+        }
+    });
+    let total_diff = move || total.get() - item.with(|i| i.as_ref().map(|i| i.owned).unwrap_or(0));
 
     let move_kind = move |item: &str, op: Op, qty: i64, team: String, person: String, memo: String| Kind::Move {
         item: item.to_string(),
@@ -721,10 +729,18 @@ fn ItemDetail(id: String) -> impl IntoView {
         take_qty.set(1);
     };
 
-    let return_all = move |team: String, n: i64| {
+    let return_some = move |team: String, n: i64| {
         let Some(it) = item.get_untracked() else { return };
+        if n <= 0 {
+            return;
+        }
+        let left = it.out_of(&team) - n;
         st.record(vec![move_kind(&it.id, Op::Return, n, team.clone(), me_user.get_value(), String::new())]);
-        st.notify(format!("{team}: {} {n}{} 반납", it.name, it.unit()));
+        st.notify(if left > 0 {
+            format!("{team}: {} {n}{} 반납 ({left}{} 남음)", it.name, it.unit(), it.unit())
+        } else {
+            format!("{team}: {} {n}{} 모두 반납", it.name, it.unit())
+        });
     };
 
     let save_more = move |_| {
@@ -750,6 +766,33 @@ fn ItemDetail(id: String) -> impl IntoView {
         st.notify(format!("{} {} {n}{} 기록", it.name, o.label(), it.unit()));
         more_qty.set(1);
         more_memo.set(String::new());
+    };
+
+    let save_total = move |_| {
+        let Some(it) = item.get_untracked() else { return };
+        let new_total = total.get_untracked();
+        let diff = new_total - it.owned;
+        if diff == 0 {
+            return;
+        }
+        if new_total < it.out_total() {
+            st.notify(format!(
+                "지금 {}{}를 가져가 있어서 그보다 적게 할 수 없습니다. 잃어버렸다면 '분실'로 기록하세요",
+                it.out_total(),
+                it.unit()
+            ));
+            total.set(it.owned);
+            return;
+        }
+        st.record(vec![move_kind(
+            &it.id,
+            Op::Adjust,
+            diff,
+            String::new(),
+            me_user.get_value(),
+            format!("전체 {} → {}", it.owned, new_total),
+        )]);
+        st.notify(format!("{} 전체 수량 {}{}로 수정", it.name, new_total, it.unit()));
     };
 
     let delete = move |_| {
@@ -822,6 +865,20 @@ fn ItemDetail(id: String) -> impl IntoView {
                         <div><b>{it.out_total()}</b><span>"대여중"</span></div>
                         <div><b>{it.owned}</b><span>"전체"</span></div>
                     </div>
+                    <div class="qty-edit">
+                        <span class="lbl">"전체 수량"</span>
+                        <Stepper value=total min=0/>
+                        <button
+                            class="btn primary"
+                            class:hidden=move || total_diff() == 0
+                            on:click=save_total
+                        >
+                            {move || {
+                                let d = total_diff();
+                                if d > 0 { format!("+{d} 저장") } else { format!("{d} 저장") }
+                            }}
+                        </button>
+                    </div>
                 }
                     .into_any()
             }}
@@ -836,16 +893,24 @@ fn ItemDetail(id: String) -> impl IntoView {
                                 .into_iter()
                                 .map(|(t, n, people)| {
                                     let t2 = t.clone();
+                                    // 돌려받을 개수 (기본: 가져간 전부)
+                                    let k = RwSignal::new(n);
                                     view! {
                                         <li>
                                             <div class="main">
                                                 <b>{t.clone()}</b>
-                                                {format!(" {n}{unit}")}
+                                                {format!(" {n}{unit} 가져감")}
                                                 <div class="muted small">{people}</div>
                                             </div>
-                                            <button class="btn small" on:click=move |_| return_all(t2.clone(), n)>
-                                                "반납"
-                                            </button>
+                                            <div class="ret">
+                                                <Stepper value=k/>
+                                                <button
+                                                    class="btn small primary"
+                                                    on:click=move |_| return_some(t2.clone(), k.get_untracked().min(n))
+                                                >
+                                                    "반납"
+                                                </button>
+                                            </div>
                                         </li>
                                     }
                                 })
@@ -867,9 +932,9 @@ fn ItemDetail(id: String) -> impl IntoView {
             </div>
 
             <details class="more">
-                <summary>"다른 기록 (일부 반납 · 소모 · 분실 · 파손 · 수량 조정)"</summary>
+                <summary>"다른 기록 (소모 · 분실 · 파손)"</summary>
                 <div class="seg">
-                    {[Op::Return, Op::Consume, Op::Lost, Op::Damage, Op::Adjust]
+                    {[Op::Consume, Op::Lost, Op::Damage]
                         .into_iter()
                         .map(|o| {
                             view! {
@@ -882,10 +947,7 @@ fn ItemDetail(id: String) -> impl IntoView {
                 </div>
                 <p class="muted small">{move || more_op.get().hint()}</p>
                 <div class="take-row">
-                    {move || {
-                        let min = if more_op.get() == Op::Adjust { -9999 } else { 1 };
-                        view! { <Stepper value=more_qty min=min/> }
-                    }}
+                    <Stepper value=more_qty/>
                     {
                         let opts = if out_teams.is_empty() { team_options() } else { out_teams.clone() };
                         view! { <Choice value=more_team options=opts empty="팀 없음"/> }
@@ -1007,7 +1069,7 @@ fn ItemForm(id: Option<String>) -> impl IntoView {
         <Field label="메모">
             <TextInput value=note placeholder="선택"/>
         </Field>
-        {(!is_new).then(|| view! { <p class="muted small">"수량은 상세 화면의 '다른 기록 → 수량 조정'으로 바꿉니다."</p> })}
+        {(!is_new).then(|| view! { <p class="muted small">"수량은 상세 화면의 '전체 수량' −/+ 로 바꿉니다."</p> })}
         <button class="btn primary block big" on:click=save>
             "저장"
         </button>
